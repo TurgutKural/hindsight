@@ -37,6 +37,7 @@ from collections.abc import Callable, Coroutine
 from typing import Any, cast
 
 from fastapi import APIRouter, Request, Response
+from fastapi.dependencies.utils import get_flat_dependant
 from fastapi.routing import APIRoute, request_response
 from pydantic import BaseModel
 
@@ -83,9 +84,12 @@ class UnknownParamsRoute(APIRoute):
 
         `dependant` is FastAPI's resolved view of the endpoint, so both the
         parameter name and any alias a client may legitimately send are covered.
+        It is flattened first: query params declared by a ``Depends()`` helper (the
+        knowledge-base tag filter) live on a sub-dependant, and reading only the
+        top level reported them as ignored while FastAPI was in fact applying them.
         """
         self._known_query: set[str] = set()
-        for param in self.dependant.query_params:
+        for param in get_flat_dependant(self.dependant).query_params:
             self._known_query.add(param.name)
             if isinstance(getattr(param, "alias", None), str):
                 self._known_query.add(param.alias)
