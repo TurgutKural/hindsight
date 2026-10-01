@@ -1352,6 +1352,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 ("user", self._retain_user_prefix, user_content),
                 ("assistant", self._retain_assistant_prefix, assistant_content),
             )
+            if content.strip()
         ]
 
     def _build_metadata(self, *, message_count: int, turn_index: int) -> Dict[str, str]:
@@ -1462,9 +1463,6 @@ class HindsightMemoryProvider(MemoryProvider):
         if why:
             logger.debug("sync_turn: skipped (%s)", why)
             return
-        if session_id:
-            self._session_id = str(session_id).strip()
-
         turn_messages = self._build_turn_messages(user_content, assistant_content)
         # Completion receipts arrive as user-role input even in primary sessions.
         # Match the current input, not old history or marker-looking human prose;
@@ -1475,9 +1473,12 @@ class HindsightMemoryProvider(MemoryProvider):
             and last_user.get("content") == user_content
             and last_user.get("display_kind") in {"async_delegation_complete", "process_complete"}
         ):
-            if not assistant_content.strip():
-                return
             turn_messages = [message for message in turn_messages if message["role"] == "assistant"]
+        if not turn_messages:
+            logger.debug("sync_turn: skipped empty turn")
+            return
+        if session_id:
+            self._session_id = str(session_id).strip()
         self._session_turns.append(json.dumps(turn_messages, ensure_ascii=False))
         self._turn_counter = self._turn_index = self._turn_counter + 1
         if remainder := self._turn_counter % self._retain_every_n_turns:
