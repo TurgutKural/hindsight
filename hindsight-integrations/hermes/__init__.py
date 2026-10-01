@@ -20,6 +20,7 @@ import queue
 import sys
 import threading
 import time
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -1405,7 +1406,9 @@ class HindsightMemoryProvider(MemoryProvider):
         """Writer job shipping *turns* as one document. Inputs are snapshotted NOW: the
         writer runs after later sync_turn() calls mutate _session_turns/_turn_index/_session_id."""
         content = "[" + ",".join(turns) + "]"
-        metadata = self._build_metadata(message_count=len(turns) * 2, turn_index=self._turn_index)
+        metadata = self._build_metadata(
+            message_count=sum(len(json.loads(turn)) for turn in turns), turn_index=self._turn_index
+        )
         lineage = (("session", self._session_id), ("parent", self._parent_session_id))
         tags = [f"{kind}:{sid}" for kind, sid in lineage if sid] or None
         bank_id, retain_async, retain_context = self._bank_id, self._retain_async, self._retain_context
@@ -1433,7 +1436,14 @@ class HindsightMemoryProvider(MemoryProvider):
 
         return _job
 
-    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+    def sync_turn(
+        self,
+        user_content: str,
+        assistant_content: str,
+        *,
+        session_id: str = "",
+        messages: Sequence[Mapping[str, Any]] | None = None,
+    ) -> None:
         """Enqueue a retain for the current turn (non-blocking; writer thread). Dropped
         once shutdown() fired so post-exit retains never reach aiohttp during teardown."""
         why = (
@@ -1449,9 +1459,20 @@ class HindsightMemoryProvider(MemoryProvider):
         if session_id:
             self._session_id = str(session_id).strip()
 
-        self._session_turns.append(
-            json.dumps(self._build_turn_messages(user_content, assistant_content), ensure_ascii=False)
-        )
+        turn_messages = self._build_turn_messages(user_content, assistant_content)
+        # Completion receipts arrive as user-role input even in primary sessions.
+        # Match the current input, not old history or marker-looking human prose;
+        # keep the assistant's findings rather than dropping the entire turn.
+        last_user = next((message for message in reversed(messages or []) if message.get("role") == "user"), None)
+        if (
+            last_user is not None
+            and last_user.get("content") == user_content
+            and last_user.get("display_kind") in {"async_delegation_complete", "process_complete"}
+        ):
+            if not assistant_content.strip():
+                return
+            turn_messages = [message for message in turn_messages if message["role"] == "assistant"]
+        self._session_turns.append(json.dumps(turn_messages, ensure_ascii=False))
         self._turn_counter = self._turn_index = self._turn_counter + 1
         if remainder := self._turn_counter % self._retain_every_n_turns:
             logger.debug(
