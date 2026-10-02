@@ -17,9 +17,7 @@ def _roles(fake: Any) -> list[str]:
 
 
 @pytest.mark.parametrize("kind", ["async_delegation_complete", "process_complete"])
-def test_structured_receipt_still_excluded_from_user_messages(
-    provider: Callable[..., Any], kind: str
-) -> None:
+def test_structured_receipt_still_excluded_from_user_messages(provider: Callable[..., Any], kind: str) -> None:
     instance, fake = provider({})
     instance.sync_turn(
         "machine receipt",
