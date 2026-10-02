@@ -334,6 +334,34 @@ def _mint_document_id(session_id: str) -> str:
     return f"{session_id}-{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
 
 
+def _notification_content_text(content: Any) -> str | None:
+    """Text projection of one inbound user row, or None when it cannot be projected.
+
+    Hermes flattens the current user message before ``sync_turn`` (``run_agent``
+    joins the text parts) while the ``messages`` rows keep their original
+    structured content, so the receipt-identity check has to compare that
+    projection instead of the raw value. Non-text parts (images) are not
+    reconstructed here: an undecidable projection returns None so the caller keeps
+    the user row (fail open).
+    """
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, (list, tuple)):
+        return None
+    parts: List[str] = []
+    for part in content:
+        if isinstance(part, str):
+            parts.append(part)
+        elif isinstance(part, Mapping):
+            text = part.get("text")
+            if not isinstance(text, str):
+                return None
+            parts.append(text)
+        else:
+            return None
+    return "\n".join(part for part in parts if part.strip()).strip()
+
+
 # initialize() kwargs copied verbatim (str, stripped) onto ``self._<name>``.
 _SESSION_KWARGS = (
     "platform",
@@ -1462,11 +1490,14 @@ class HindsightMemoryProvider(MemoryProvider):
         turn_messages = self._build_turn_messages(user_content, assistant_content)
         # Completion receipts arrive as user-role input even in primary sessions.
         # Match the current input, not old history or marker-looking human prose;
-        # keep the assistant's findings rather than dropping the entire turn.
+        # compare the text projection because the host flattened the input before
+        # calling us while the messages row still carries structured content.
+        # Keep the assistant's findings rather than dropping the entire turn.
         last_user = next((message for message in reversed(messages or []) if message.get("role") == "user"), None)
+        last_user_text = _notification_content_text(last_user.get("content")) if last_user else None
         if (
             last_user is not None
-            and last_user.get("content") == user_content
+            and last_user_text == user_content.strip()
             and last_user.get("display_kind") in {"async_delegation_complete", "process_complete"}
         ):
             if not assistant_content.strip():
