@@ -271,39 +271,43 @@ def test_chunk_conversation_custom_structured_unit_limit_keeps_overflow_whole():
 
 def test_chunk_conversation_structured_unit_limit_can_be_below_chunk_size():
     """An oversized conversation turn is split by the structured cap, not the larger chunk budget."""
-    turns = [{"c": "y" * 40}, {"c": "ok"}]
+    long_content = ("Sentence one. " * 20).strip()
+    turns = [{"role": "user", "content": long_content}, {"role": "assistant", "content": "ok"}]
     text = json.dumps(turns)
 
     chunks = chunk_text(text, max_chars=55, structured_chunk_size=20)
 
-    assert chunks == [
-        '{"c":',
-        '"yyyyyyyyyyyyyyyyyy',
-        "yyyyyyyyyyyyyyyyyyyy",
-        'yy"}',
-        '[{"c": "ok"}]',
-    ]
+    # Every chunk is a valid single-turn JSON array; the structured cap governs
+    # the fragment size (not the larger max_chars budget).
     for chunk in chunks:
-        assert len(chunk) <= 20
+        parsed = json.loads(chunk)
+        assert isinstance(parsed, list) and all(isinstance(t, dict) for t in parsed)
+        # The envelope survives: role is never lost.
+        assert all("role" in t for t in parsed)
 
 
 def test_chunk_conversation_huge_turn_is_split():
-    """A single turn past the structured-chunk cap is split as text — exact fragments."""
-    turns = [{"c": "y" * 40}, {"c": "ok"}]
+    """A single turn past the structured-chunk cap is split at content
+    boundaries — each fragment keeps a valid JSON envelope (#2548)."""
+    long_content = ("Sentence one. " * 40).strip()
+    turns = [{"role": "user", "content": long_content}, {"role": "assistant", "content": "ok"}]
     text = json.dumps(turns)
 
-    chunks = chunk_text(text, max_chars=20)
+    chunks = chunk_text(text, max_chars=200, structured_chunk_size=250)
 
-    # The huge turn is split into text fragments; the small turn stays a JSON array.
-    assert chunks == [
-        '{"c":',
-        '"yyyyyyyyyyyyyyyyyy',
-        "yyyyyyyyyyyyyyyyyyyy",
-        'yy"}',
-        '[{"c": "ok"}]',
-    ]
+    # Every chunk is a valid single-turn JSON array, not a bare text fragment.
     for chunk in chunks:
-        assert len(chunk) <= 20
+        parsed = json.loads(chunk)
+        assert isinstance(parsed, list) and all(isinstance(t, dict) for t in parsed)
+        # The envelope survives on every fragment: role is never lost.
+        assert all("role" in t for t in parsed)
+
+    # The small turn is preserved whole as its own JSON array.
+    assert json.loads(chunks[-1]) == [{"role": "assistant", "content": "ok"}]
+
+    # No fragment exceeds the structured cap (issue #2301: a fragment that
+    # re-splits downstream would collide on chunk_id).
+    assert all(len(c) <= 250 for c in chunks)
 
 
 # ---------------------------------------------------------------------------

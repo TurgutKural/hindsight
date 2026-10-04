@@ -908,17 +908,29 @@ def _iter_conversation_chunks(turns: list[dict], max_chars: int, structured_limi
         turn_unit_size = len(turn_json)
         turn_size = turn_unit_size + 1  # +1 for comma
 
-        # A turn too large to keep whole even alone: flush, then split it as
-        # text. Fragment within min(structured_limit, max_chars) so no fragment
-        # exceeds the chunk budget — otherwise a downstream re-chunk would split
-        # it again and collide on chunk_id (issue #2301).
+        # A turn too large to keep whole even alone: flush, then split its
+        # CONTENT — never its JSON envelope. Every yielded fragment is a valid
+        # single-turn JSON array so the extractor never sees broken JSON and the
+        # turn's role/metadata survives on each fragment (#2548). Fragment budget
+        # excludes the envelope overhead; a downstream re-chunk sees a
+        # self-contained JSON object and will not re-split it (issue #2301).
         if turn_unit_size > structured_limit:
             yield from _flush()
-            for fragment in _iter_recursive_splits(
-                turn_json, min(structured_limit, max_chars), _RECURSIVE_TEXT_SEPARATORS
-            ):
+            content = turn.get("content")
+            if isinstance(content, str):
+                overhead = len(json.dumps({**turn, "content": ""}, ensure_ascii=False))
+                content_budget = max(1, min(structured_limit, max_chars) - overhead)
+                for fragment in _iter_recursive_splits(
+                    content, content_budget, _RECURSIVE_TEXT_SEPARATORS
+                ):
+                    emitted = True
+                    yield json.dumps([{**turn, "content": fragment}], ensure_ascii=False)
+            else:
+                # Non-string content (e.g. attachment blocks): keep the turn whole
+                # in one valid JSON envelope — a valid oversized chunk is
+                # recoverable, a broken one is not.
                 emitted = True
-                yield fragment
+                yield json.dumps([turn], ensure_ascii=False)
             continue
 
         # If adding this turn would exceed limit and we have turns, save current chunk
