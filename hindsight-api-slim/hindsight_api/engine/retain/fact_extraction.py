@@ -920,9 +920,7 @@ def _iter_conversation_chunks(turns: list[dict], max_chars: int, structured_limi
             if isinstance(content, str):
                 overhead = len(json.dumps({**turn, "content": ""}, ensure_ascii=False))
                 content_budget = max(1, min(structured_limit, max_chars) - overhead)
-                for fragment in _iter_recursive_splits(
-                    content, content_budget, _RECURSIVE_TEXT_SEPARATORS
-                ):
+                for fragment in _iter_recursive_splits(content, content_budget, _RECURSIVE_TEXT_SEPARATORS):
                     emitted = True
                     yield json.dumps([{**turn, "content": fragment}], ensure_ascii=False)
             else:
