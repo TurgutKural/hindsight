@@ -912,17 +912,29 @@ def _iter_conversation_chunks(turns: list[dict], max_chars: int, structured_limi
         # CONTENT — never its JSON envelope. Every yielded fragment is a valid
         # single-turn JSON array so the extractor never sees broken JSON and the
         # turn's role/metadata survives on each fragment (#2548). Fragment budget
-        # excludes the envelope overhead; a downstream re-chunk sees a
-        # self-contained JSON object and will not re-split it (issue #2301).
+        # subtracts the full envelope cost including array brackets; a downstream
+        # re-chunk sees a self-contained JSON object and will not re-split it
+        # (issue #2301).
         if turn_unit_size > structured_limit:
             yield from _flush()
             content = turn.get("content")
+            cap = min(structured_limit, max_chars)
             if isinstance(content, str):
-                overhead = len(json.dumps({**turn, "content": ""}, ensure_ascii=False))
-                content_budget = max(1, min(structured_limit, max_chars) - overhead)
-                for fragment in _iter_recursive_splits(content, content_budget, _RECURSIVE_TEXT_SEPARATORS):
+                # Full envelope cost: array brackets + turn keys + empty content.
+                overhead = len(json.dumps([{**turn, "content": ""}], ensure_ascii=False))
+                content_budget = cap - overhead
+                if content_budget < 1:
+                    # The envelope alone exceeds the cap (edge case: tiny
+                    # structured_chunk_size). Splitting content cannot satisfy
+                    # the cap either way, so keep the turn whole in one valid
+                    # envelope — a valid oversized chunk is recoverable and
+                    # re-chunk-stable, a broken one is not.
                     emitted = True
-                    yield json.dumps([{**turn, "content": fragment}], ensure_ascii=False)
+                    yield json.dumps([turn], ensure_ascii=False)
+                else:
+                    for fragment in _iter_recursive_splits(content, content_budget, _RECURSIVE_TEXT_SEPARATORS):
+                        emitted = True
+                        yield json.dumps([{**turn, "content": fragment}], ensure_ascii=False)
             else:
                 # Non-string content (e.g. attachment blocks): keep the turn whole
                 # in one valid JSON envelope — a valid oversized chunk is
